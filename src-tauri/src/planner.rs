@@ -3,9 +3,9 @@
 //! A port is reported **available** only when all of these hold:
 //! 1. no socket in the live table uses it (any address, any process);
 //! 2. it is not inside a Windows excluded port range (verified via netsh);
-//! 3. a test bind on 0.0.0.0 and 127.0.0.1 (and :: when IPv6 exists)
-//!    succeeds right now — Windows allows a more specific bind next to a
-//!    wildcard one, so both are tried.
+//! 3. a test bind (without listen, so no firewall prompt) on 0.0.0.0 and
+//!    127.0.0.1 (and :: when IPv6 exists) succeeds right now — Windows allows
+//!    a more specific bind next to a wildcard one, so both are tried.
 //!
 //! Personal reservations, project registrations and plans don't make a port
 //! "occupied"; they're reported as *claims* so the user can decide.
@@ -13,7 +13,7 @@
 use crate::net::excluded::ExclusionReport;
 use crate::net::{Protocol, SocketEntry};
 use serde::Serialize;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -44,21 +44,44 @@ pub struct Availability {
     pub summary: String,
 }
 
-/// Attempts to bind the port on wildcard and loopback addresses.
+/// Attempts to bind the port without ever listening on it.
+///
+/// TCP sockets are bound (never `listen()`ed) on 0.0.0.0, 127.0.0.1 and,
+/// when available, `::`. A bind without listen detects address conflicts but
+/// does not trigger a Windows Firewall prompt, so availability checks never
+/// put a security dialog in front of the user. UDP is test-bound on loopback
+/// only (a wildcard UDP bind can involve the firewall); wildcard UDP usage is
+/// covered by the socket table.
 pub fn test_bind(protocol: Protocol, port: u16) -> Result<(), String> {
-    let mut addrs = vec![SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)), SocketAddr::from((Ipv4Addr::LOCALHOST, port))];
-    // Only test IPv6 if the stack supports it.
-    if TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok() {
-        addrs.push(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)));
-    }
-    for a in addrs {
-        let r = match protocol {
-            Protocol::Tcp => TcpListener::bind(a).map(drop),
-            Protocol::Udp => UdpSocket::bind(a).map(drop),
-        };
-        if let Err(e) = r {
-            return Err(format!("{a}: {e}"));
+    use socket2::{Domain, Protocol as SProto, Socket, Type};
+    let ipv6 = Socket::new(Domain::IPV6, Type::STREAM, Some(SProto::TCP)).is_ok();
+    let addrs: Vec<SocketAddr> = match protocol {
+        Protocol::Tcp => {
+            let mut v = vec![SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)), SocketAddr::from((Ipv4Addr::LOCALHOST, port))];
+            if ipv6 {
+                v.push(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)));
+            }
+            v
         }
+        Protocol::Udp => {
+            let mut v = vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))];
+            if ipv6 {
+                v.push(SocketAddr::from((Ipv6Addr::LOCALHOST, port)));
+            }
+            v
+        }
+    };
+    for a in addrs {
+        let (ty, pr) = match protocol {
+            Protocol::Tcp => (Type::STREAM, SProto::TCP),
+            Protocol::Udp => (Type::DGRAM, SProto::UDP),
+        };
+        let sock = Socket::new(Domain::for_address(a), ty, Some(pr)).map_err(|e| format!("{a}: {e}"))?;
+        if a.is_ipv6() {
+            let _ = sock.set_only_v6(true);
+        }
+        sock.bind(&a.into()).map_err(|e| format!("{a}: {e}"))?;
+        // Dropped here: closed without ever listening.
     }
     Ok(())
 }
@@ -161,6 +184,7 @@ mod tests {
     use super::*;
     use crate::net::excluded::ExcludedRange;
     use crate::net::{make_entry, SocketState};
+    use std::net::TcpListener;
 
     fn excl() -> ExclusionReport {
         ExclusionReport {
@@ -183,11 +207,20 @@ mod tests {
     #[test]
     fn bind_detects_hidden_occupant() {
         // Socket table says free but the port is actually bound: bind must catch it.
-        let l = TcpListener::bind("0.0.0.0:0").unwrap();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         let a = assess(Protocol::Tcp, port, &[], &excl(), vec![], true);
         assert!(!a.available);
         assert_eq!(a.bind_ok, Some(false));
+    }
+
+    #[test]
+    fn test_bind_never_listens() {
+        // After a check the port must still be connectable-refused (nothing listening).
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        test_bind(Protocol::Tcp, port).unwrap();
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+        assert!(test_bind(Protocol::Udp, port).is_ok());
     }
 
     #[test]
@@ -208,7 +241,7 @@ mod tests {
 
     #[test]
     fn suggestions_skip_claimed_excluded_and_bound() {
-        let held = TcpListener::bind("0.0.0.0:0").unwrap();
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
         let hp = held.local_addr().unwrap().port();
         let start = hp.saturating_sub(2).max(1024);
         let claimed = move |p: u16| p == start;

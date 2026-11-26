@@ -29,6 +29,8 @@ rusqlite = { version = "0.43", features = ["bundled"] }
 dirs = "6"
 parking_lot = "0.12"
 png = "0.17"
+# Already in the tree via the updater; used to test-bind without listen().
+socket2 = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
