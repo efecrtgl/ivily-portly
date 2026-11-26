@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in Ivily Portly doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please **do not** include secrets, tokens or private paths you don't want public.
+        Security vulnerabilities must be reported privately — see SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Portly version
+      description: Shown at the bottom of the sidebar and in Settings → About.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 23H2"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Dashboard, Ports, Connections, Processes, Projects, Port Planner, Profiles, Activity, Settings, Installer / updates, IEP integration, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Include steps to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: dropdown
+    id: elevated
+    attributes:
+      label: Was Portly running as administrator?
+      options: ["No (default)", "Yes", "Not sure"]

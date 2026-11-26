@@ -1,0 +1,120 @@
+name: Release
+
+# On a vX.Y.Z tag:
+#   1. verify version consistency (tag, package.json, Cargo.toml, CHANGELOG),
+#   2. run lint and all tests,
+#   3. build the Windows x64 NSIS installer and sign the updater artifact,
+#   4. verify artifacts (installer, signature, embedded version),
+#   5. create a DRAFT GitHub release with installer, latest.json, portable zip,
+#      release notes from CHANGELOG.md and SHA256SUMS.txt.
+# The draft is published manually after review. If any step fails nothing is
+# published.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Tag matches version
+        shell: pwsh
+        run: ./scripts/check-version.ps1 -Tag "${{ github.ref_name }}"
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Signing key must be configured
+        shell: pwsh
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if (-not $env:KEY) { Write-Error "Secret TAURI_SIGNING_PRIVATE_KEY is not set. See docs/RELEASING.md"; exit 1 }
+
+      - name: Release notes from CHANGELOG
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          $text = Get-Content CHANGELOG.md -Raw
+          $m = [regex]::Match($text, "(?ms)^## \[$([regex]::Escape($v))\][^\n]*\n(.*?)(?=^## \[|\z)")
+          if (-not $m.Success) { Write-Error "No CHANGELOG section for $v"; exit 1 }
+          $notes = $m.Groups[1].Value.Trim() + "`n`n---`nVerify downloads with ``SHA256SUMS.txt``. See docs/INSTALLATION.md."
+          Set-Content -Encoding utf8 release-notes.md $notes
+
+      - name: Build, sign and create draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Ivily Portly ${{ github.ref_name }}"
+          releaseBodyPath: release-notes.md
+          releaseDraft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+
+      - name: Verify artifacts
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          $dir = "src-tauri/target/release/bundle/nsis"
+          $exe = Join-Path $dir "Ivily Portly_${v}_x64-setup.exe"
+          if (-not (Test-Path $exe)) { Write-Error "Installer not found: $exe"; exit 1 }
+          if (-not (Test-Path "$exe.sig")) { Write-Error "Updater signature not found"; exit 1 }
+          if ((Get-Item $exe).Length -lt 1MB) { Write-Error "Installer is unexpectedly small"; exit 1 }
+          $app = "src-tauri/target/release/ivily-portly.exe"
+          $appVer = (Get-Item $app).VersionInfo.ProductVersion
+          if (-not $appVer.StartsWith($v.Split('-')[0])) { Write-Error "App version ($appVer) does not match tag ($v)"; exit 1 }
+          Write-Host "Installer: $exe ($([math]::Round((Get-Item $exe).Length/1MB,2)) MB), app version $appVer"
+          $iep = & $app --iep describe | Out-String | ConvertFrom-Json
+          if ($iep.app.version -ne $v) { Write-Error "IEP reports version $($iep.app.version)"; exit 1 }
+
+      - name: Portable zip and SHA-256 checksums
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          $out = "dist-release"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $stage = Join-Path $out "Ivily Portly"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item src-tauri/target/release/ivily-portly.exe (Join-Path $stage "Ivily Portly.exe")
+          Copy-Item LICENSE (Join-Path $stage "LICENSE.txt")
+          @"
+          Ivily Portly $v (portable)
+
+          No installation needed: run "Ivily Portly.exe".
+          Requires the Microsoft Edge WebView2 Runtime (included with Windows 11).
+          Settings and history are stored in %LOCALAPPDATA%\IvilyPortly.
+          The portable build does not update itself; download new versions from
+          https://github.com/efecrtgl/ivily-portly/releases
+          "@ | Set-Content -Encoding utf8 (Join-Path $stage "README.txt")
+          $zip = Join-Path $out "Ivily.Portly_${v}_x64_portable.zip"
+          Compress-Archive -Path $stage -DestinationPath $zip -Force
+          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis -File) + @(Get-Item $zip)
+          # GitHub replaces spaces in asset names with dots; checksums must use the uploaded names.
+          $lines = $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), ($_.Name -replace ' ', '.') }
+          $lines | Set-Content -Encoding utf8 "$out/SHA256SUMS.txt"
+          Get-Content "$out/SHA256SUMS.txt"
+          gh release upload "${{ github.ref_name }}" "$zip" "$out/SHA256SUMS.txt" --clobber

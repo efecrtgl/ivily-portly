@@ -35,6 +35,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "publisher": "efecrtgl",
     "homepage": "https://github.com/efecrtgl/ivily-portly",
     "copyright": "© 2026 efecrtgl",

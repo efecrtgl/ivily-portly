@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, test and build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Version consistency
+        shell: pwsh
+        run: ./scripts/check-version.ps1
+      - run: npm ci
+      - name: ESLint
+        run: npm run check
+      - name: Frontend tests
+        run: npm test
+      - name: Frontend build
+        run: npm run build
+      - name: rustfmt
+        working-directory: src-tauri
+        run: cargo fmt --check
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo audit
+        working-directory: src-tauri
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit

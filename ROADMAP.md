@@ -35,14 +35,14 @@ document. A phase is only marked done when its tests actually ran and passed.
   checks (loopback only), port planner (verified availability and
   suggestions), import/export, and the IEP provider.
 
-## Phase 2 — Interface
+## Phase 2 — Interface ✅
 
 - App shell: custom title bar, sidebar, themes, toasts, dialogs.
 - Dashboard, Port Explorer, Connections, Process Explorer, Projects (server
   manager), Port Planner (availability, reservations, ranges, plans),
   Profiles, Activity Center, Settings.
 
-## Phase 3 — Repository infrastructure
+## Phase 3 — Repository infrastructure ✅
 
 - README, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, CHANGELOG, architecture,
   installation, usage, IEP and versioning documentation.
